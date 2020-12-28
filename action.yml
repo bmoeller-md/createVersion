@@ -1,0 +1,122 @@
+name: mcbscore_createVersion
+description: Auswertung der Issues eines Repositories seit dem letzten Tag, Bereitstellen von Issue-Infos für eventuelle Release-Notes, Erzeugen einer neuen Version für ein nachfolgendes Releasebuild
+inputs:
+  JIRA_URL:  
+    description: Organisationsinterne URL des angebundenen JIRA-Systems
+    required: true
+    default: ${{ secrets.JIRA_URL }}
+  JIRA_CREDENTIALS:
+    description: Organisationsinterne Credentials (user:password) des angebundenen JIRA-Systems
+    required: true
+    default: ${{ secrets.MCBSTEST_CREDENTIALS }}
+  COMPONENT:
+    description: der Name der zu erzeugenden Komponente (erforderlich für Auswertung der Komponenten)
+    required: false
+    default: ''
+  MATCH:
+    description: das zu erfüllende Muster für die Suche nach einem Tag im Repository (e.g "*" , "ms-bm_*")
+  ATLASSIAN_DEVELOPER_TOOLS:
+    description: die Version der organisationsinternen AtlassianDeveloperTools (separates Repository)
+    required: false
+    default: 1.10.3
+  LOGLEVEL:
+    description: Das LogLevel der innerhalb der Action ablaufenden AtlassianDeveloperTools
+    required: false
+    default: info
+outputs:
+  newVersion:
+    description: die Versionskennung für das nachfolgende Releasebuild
+    value: ${{ steps.createVersion.outputs.newVersion }}
+runs:
+  using: "composite"
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: checkout Repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      
+      # Checkout developer-tools (master) in ./devtools
+      - name: checkout developer-tools
+        uses: actions/checkout@v2
+        with:
+          repository: 'freenet-group/developer-tools'
+          token:   ${{ secrets.GH_REPO_MCBS }}
+          path: 'devtools'
+      
+      # Prepare Java
+      - name: Setup Java JDK
+        uses: actions/setup-java@v1.4.3
+        with:
+          java-version: 11
+        
+      # Runs a set of commands using the runners shell
+      - id: createVersion
+        run: |
+          echo Checked out ...
+          # letztes Tag ermitteln
+          # lastTag=`git describe --abbrev=0 --tags --match "$MATCH"`
+          lastTag=`git describe --abbrev=0 --tags`
+          echo "Last Tag : ${lastTag}"
+           # hashcode fuer das vorherige release (i.e. lastTag)
+          tag=`git show "$lastTag" | grep commit | cut -d ' ' -f 2`
+          echo "Tag-Address ($lastTag) : $tag"
+          # merges
+          git log $tag..HEAD --pretty=format:"%s %an" | grep "Merge" | grep "from" | cut -d '/' -f 3 | grep -Eo '^ABRMS-[0-9]{4}'  | cut -d '-' -f 1,2 | sort | uniq >> a.txt
+          git log $tag..HEAD --pretty=format:"%s %an" | grep "Merge" | grep "from" | cut -d '/' -f 3 | grep -Eo '^MCBS-[0-9]{4}'  | cut -d '-' -f 1,2 | sort | uniq >> a.txt
+          # commits
+          git log $tag..HEAD --pretty=format:"%s %an" | grep "^\[ABRMS*" | cut -d ' ' -f 1 | sed s'/.$//' | sed s'/^.//' | sort | uniq >> a.txt
+          git log $tag..HEAD --pretty=format:"%s %an" | grep "^\[MCBS*" | cut -d ' ' -f 1 | sed s'/.$//' | sed s'/^.//' | sort | uniq >> a.txt
+          # commits
+          git log $tag..HEAD --pretty=format:"%s %an" | grep "^ABRMS*" | cut -d ' ' -f 1 | cut -d ':' -f 1 |sort | uniq >> a.txt
+          #git log $tag..HEAD --pretty=format:"%s %an" | grep -Eo '^ABRMS-[0-9]{4}' | cut -d ' ' -f 1 | sort | uniq >> a.txt
+          git log $tag..HEAD --pretty=format:"%s %an" | grep "^MCBS*" | cut -d ' ' -f 1 | cut -d ':' -f 1 | sort | uniq >> a.txt
+         
+          # sortieren und ausgeben
+          cat a.txt
+          cat a.txt | sort | uniq >> branch_issues.txt
+          rm -f a.txt
+          # Kontrollausgabe
+          cat branch_issues.txt
+          
+          # write table of contents
+          cat branch_issues.txt | while read line
+          do
+            printf $line" " >> issue_list.txt
+          done
+          
+          # Fetch Issue-Infos (e.g. for release-notes)
+          java -Dlog4j.configuration=./devtools/apps/atltools/log4j_$LOGLEVEL.properties  -cp ./devtools/apps/atltools/AtlassianDeveloperTools-all-$ATLASSIAN_DEVELOPER_TOOLS.jar:.:./devtools/apps/atltools/AtlassianDeveloperTools  jira_issue.GetIssueInfosKt $JIRA_URL $JIRA_CREDENTIALS branch_issues.txt issue_info.csv
+          echo "###########################################"
+          echo "Issue-Infos : "
+          echo "###########################################"
+          cat issue_info.csv
+          echo "###########################################"
+          
+          # Ermitteln der nächsten Version basierend auf dem letztem Tag , der Komponente und der zuvor erzeugten Datei mit den beinhalteten Issues 
+          java -Dlog4j.configuration=./devtools/apps/atltools/log4j_$LOGLEVEL.properties -cp ./devtools/apps/atltools/AtlassianDeveloperTools-all-$ATLASSIAN_DEVELOPER_TOOLS.jar:.:./devtools/apps/atltools/AtlassianDeveloperTools branch_info.CreateNewVersionKt $lastTag $COMPONENT "branch_issues.txt" $JIRA_URL $JIRA_CREDENTIALS
+          
+          echo "###########################################"
+          echo "New Version (newVersion.txt) : "
+          echo "###########################################"
+          cat newVersion.txt
+          echo "\n###########################################"
+          
+          # Version als Variable bereitstellen
+          echo "::set-output name=newVersion::${cat newVersion.txt}"
+          
+      - uses: actions/upload-artifact@v2
+        with:
+          name: IssueInfos
+          path: issue_info.csv
+      
+      - uses: actions/upload-artifact@v2
+        with:
+          name: NewVersion
+          path: newVersion.txt
+  
+  
+  
+  
+ 
+   
